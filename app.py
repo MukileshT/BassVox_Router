@@ -107,6 +107,8 @@ class SplitPlaybackEngine:
 
         self.bass_device: Optional[int] = None
         self.vocal_device: Optional[int] = None
+        self.bass_channels: int = 2
+        self.vocal_channels: int = 2
 
         self.bass_stream = None
         self.vocal_stream = None
@@ -134,6 +136,10 @@ class SplitPlaybackEngine:
     def set_devices(self, bass_device: int, vocal_device: int):
         self.bass_device = bass_device
         self.vocal_device = vocal_device
+        bass_info = sd.query_devices(bass_device)
+        vocal_info = sd.query_devices(vocal_device)
+        self.bass_channels = max(1, min(2, int(bass_info.get("max_output_channels", 2))))
+        self.vocal_channels = max(1, min(2, int(vocal_info.get("max_output_channels", 2))))
 
     def set_tuning(self, blocksize: int, latency_ms: int):
         self.blocksize = max(128, int(blocksize))
@@ -187,12 +193,36 @@ class SplitPlaybackEngine:
     def _bass_callback(self, outdata, frames, time_info, status):
         if status:
             self._log(f"Bass stream status: {status}")
-        outdata[:] = self._dequeue_audio(self.bass_queue, frames)
+        block = self._dequeue_audio(self.bass_queue, frames)
+        outdata[:] = self._to_channels(block, outdata.shape[1])
 
     def _vocal_callback(self, outdata, frames, time_info, status):
         if status:
             self._log(f"Vocal stream status: {status}")
-        outdata[:] = self._dequeue_audio(self.vocal_queue, frames)
+        block = self._dequeue_audio(self.vocal_queue, frames)
+        outdata[:] = self._to_channels(block, outdata.shape[1])
+
+    @staticmethod
+    def _to_channels(block: np.ndarray, channels: int) -> np.ndarray:
+        if channels <= 1:
+            if block.ndim == 1:
+                return block.reshape(-1, 1)
+            mono = np.mean(block, axis=1, keepdims=True)
+            return mono.astype(np.float32)
+
+        if block.ndim == 1:
+            return np.column_stack([block, block]).astype(np.float32)
+
+        if block.shape[1] >= channels:
+            return block[:, :channels].astype(np.float32)
+
+        if block.shape[1] == 1:
+            return np.repeat(block, channels, axis=1).astype(np.float32)
+
+        # Fallback for unexpected channel counts
+        last = block[:, -1:]
+        pads = [last for _ in range(channels - block.shape[1])]
+        return np.concatenate([block] + pads, axis=1).astype(np.float32)
 
     @staticmethod
     def _dequeue_audio(q: "queue.Queue[np.ndarray]", frames: int):
@@ -221,7 +251,7 @@ class SplitPlaybackEngine:
         self.bass_stream = sd.OutputStream(
             device=self.bass_device,
             samplerate=loaded_file.samplerate,
-            channels=2,
+            channels=self.bass_channels,
             dtype="float32",
             blocksize=self.blocksize,
             latency=self.stream_latency_sec,
@@ -230,7 +260,7 @@ class SplitPlaybackEngine:
         self.vocal_stream = sd.OutputStream(
             device=self.vocal_device,
             samplerate=loaded_file.samplerate,
-            channels=2,
+            channels=self.vocal_channels,
             dtype="float32",
             blocksize=self.blocksize,
             latency=self.stream_latency_sec,
@@ -341,6 +371,9 @@ class LiveSplitEngine:
         self.input_device: Optional[int] = None
         self.bass_device: Optional[int] = None
         self.vocal_device: Optional[int] = None
+        self.input_channels: int = 2
+        self.bass_channels: int = 2
+        self.vocal_channels: int = 2
 
         self.blocksize = 1024
         self.sample_rate = 48000
@@ -360,6 +393,12 @@ class LiveSplitEngine:
         self.bass_device = bass_device
         self.vocal_device = vocal_device
         self.sample_rate = sample_rate
+        input_info = sd.query_devices(input_device)
+        bass_info = sd.query_devices(bass_device)
+        vocal_info = sd.query_devices(vocal_device)
+        self.input_channels = max(1, min(2, int(input_info.get("max_input_channels", 2))))
+        self.bass_channels = max(1, min(2, int(bass_info.get("max_output_channels", 2))))
+        self.vocal_channels = max(1, min(2, int(vocal_info.get("max_output_channels", 2))))
         self.dsp = AudioSplitterDSP(self.sample_rate)
 
     def set_tuning(self, blocksize: int, latency_ms: int):
@@ -409,7 +448,10 @@ class LiveSplitEngine:
             elif data.shape[0] > frames:
                 data = data[:frames]
 
-            outdata[:] = data
+            if outdata.shape[1] == 1:
+                outdata[:] = np.mean(data, axis=1, keepdims=True)
+            else:
+                outdata[:] = data[:, : outdata.shape[1]]
 
         return callback
 
@@ -422,7 +464,7 @@ class LiveSplitEngine:
         self.input_stream = sd.InputStream(
             device=self.input_device,
             samplerate=self.sample_rate,
-            channels=2,
+            channels=self.input_channels,
             dtype="float32",
             blocksize=self.blocksize,
             latency=self.stream_latency_sec,
@@ -431,7 +473,7 @@ class LiveSplitEngine:
         self.bass_stream = sd.OutputStream(
             device=self.bass_device,
             samplerate=self.sample_rate,
-            channels=2,
+            channels=self.bass_channels,
             dtype="float32",
             blocksize=self.blocksize,
             latency=self.stream_latency_sec,
@@ -440,7 +482,7 @@ class LiveSplitEngine:
         self.vocal_stream = sd.OutputStream(
             device=self.vocal_device,
             samplerate=self.sample_rate,
-            channels=2,
+            channels=self.vocal_channels,
             dtype="float32",
             blocksize=self.blocksize,
             latency=self.stream_latency_sec,
@@ -569,6 +611,7 @@ class MainWindow(QMainWindow):
         self.bass_combo = QComboBox()
         self.vocal_combo = QComboBox()
         self.input_combo = QComboBox()
+        self.bass_combo.currentIndexChanged.connect(self._ensure_distinct_output_selection)
         self.buffer_combo = QComboBox()
         self.buffer_combo.addItems(["256", "512", "1024", "2048", "4096"])
         self.buffer_combo.setCurrentText("2048")
@@ -774,7 +817,7 @@ class MainWindow(QMainWindow):
             out_channels = int(dev["max_output_channels"])
             in_channels = int(dev["max_input_channels"])
 
-            if out_channels > 0:
+            if out_channels > 0 and self._is_output_device_available(idx, dev):
                 text = f"[{idx}] {name}"
                 self.bass_combo.addItem(text, idx)
                 self.vocal_combo.addItem(text, idx)
@@ -786,7 +829,7 @@ class MainWindow(QMainWindow):
                 if idx == default_out and best_vocal_row == -1:
                     best_vocal_row = row
 
-            if in_channels > 0:
+            if in_channels > 0 and self._is_input_device_available(idx, dev):
                 text = f"[{idx}] {name}"
                 self.input_combo.addItem(text, idx)
                 row = self.input_combo.count() - 1
@@ -797,10 +840,44 @@ class MainWindow(QMainWindow):
             self.bass_combo.setCurrentIndex(best_bass_row if best_bass_row != -1 else 0)
         if self.vocal_combo.count() > 0:
             self.vocal_combo.setCurrentIndex(best_vocal_row if best_vocal_row != -1 else 0)
+            self._ensure_distinct_output_selection()
         if self.input_combo.count() > 0:
             self.input_combo.setCurrentIndex(best_input_row if best_input_row != -1 else 0)
 
         self.set_status("Audio devices refreshed.")
+
+    @staticmethod
+    def _is_output_device_available(device_index: int, dev: dict) -> bool:
+        try:
+            channels = max(1, min(2, int(dev.get("max_output_channels", 0))))
+            samplerate = float(dev.get("default_samplerate", 48000.0))
+            sd.check_output_settings(device=device_index, channels=channels, samplerate=samplerate)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_input_device_available(device_index: int, dev: dict) -> bool:
+        try:
+            channels = max(1, min(2, int(dev.get("max_input_channels", 0))))
+            samplerate = float(dev.get("default_samplerate", 48000.0))
+            sd.check_input_settings(device=device_index, channels=channels, samplerate=samplerate)
+            return True
+        except Exception:
+            return False
+
+    def _ensure_distinct_output_selection(self):
+        if self.bass_combo.count() <= 1 or self.vocal_combo.count() <= 1:
+            return
+        bass_dev = self.bass_combo.currentData()
+        vocal_dev = self.vocal_combo.currentData()
+        if bass_dev != vocal_dev:
+            return
+
+        for row in range(self.vocal_combo.count()):
+            if self.vocal_combo.itemData(row) != bass_dev:
+                self.vocal_combo.setCurrentIndex(row)
+                break
 
     @staticmethod
     def _format_time(seconds: float) -> str:
@@ -845,6 +922,9 @@ class MainWindow(QMainWindow):
     def _prepare_playback(self, song_path: str):
         bass_device = self._selected_device_index(self.bass_combo)
         vocal_device = self._selected_device_index(self.vocal_combo)
+
+        if bass_device == vocal_device:
+            raise RuntimeError("Please select different output devices for Bass and Vocal.")
 
         self.playback.set_devices(bass_device, vocal_device)
         self.playback.load_file(song_path)
@@ -907,6 +987,9 @@ class MainWindow(QMainWindow):
             input_dev = self._selected_device_index(self.input_combo)
             bass_dev = self._selected_device_index(self.bass_combo)
             vocal_dev = self._selected_device_index(self.vocal_combo)
+
+            if bass_dev == vocal_dev:
+                raise RuntimeError("Please select different output devices for Bass and Vocal.")
 
             input_info = sd.query_devices(input_dev)
             sr = int(input_info.get("default_samplerate", 48000))
