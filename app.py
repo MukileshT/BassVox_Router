@@ -324,6 +324,15 @@ class SplitPlaybackEngine:
 
         self._log("Playback worker stopped.")
 
+    def _wait_for_preroll(self, timeout_sec: float = 1.0, min_blocks: int = 2):
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            if self.stop_event.is_set():
+                break
+            if self.bass_queue.qsize() >= min_blocks and self.vocal_queue.qsize() >= min_blocks:
+                break
+            time.sleep(0.02)
+
     def play(self):
         if self.file is None:
             raise RuntimeError("No file loaded")
@@ -338,10 +347,12 @@ class SplitPlaybackEngine:
         self.file_done_event.clear()
         self._clear_queues()
 
-        self._open_streams()
-
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
+
+        self._wait_for_preroll(timeout_sec=max(0.4, self.blocksize / 8000.0), min_blocks=2)
+
+        self._open_streams()
         self._log("Playing.")
 
     def pause(self):
@@ -842,70 +853,62 @@ class MainWindow(QMainWindow):
         return int(data)
 
     def refresh_devices(self):
+        previous_bass_device = self.bass_combo.currentData()
+        previous_vocal_device = self.vocal_combo.currentData()
+        previous_input_device = self.input_combo.currentData()
+
         self.bass_combo.clear()
         self.vocal_combo.clear()
         self.input_combo.clear()
 
         devices = sd.query_devices()
-        default_in, default_out = sd.default.device
+        hostapis = sd.query_hostapis()
 
-        best_bass_row = -1
-        best_vocal_row = -1
-        best_input_row = -1
+        bass_rows: list[int] = []
+        vocal_rows: list[int] = []
+        input_rows: list[int] = []
 
         for idx, dev in enumerate(devices):
             name = dev["name"]
+            hostapi_name = hostapis[int(dev["hostapi"])]["name"]
             out_channels = int(dev["max_output_channels"])
             in_channels = int(dev["max_input_channels"])
+            default_sr = int(float(dev.get("default_samplerate", 48000.0)))
 
-            if out_channels > 0 and self._is_output_device_available(idx, dev):
-                text = f"[{idx}] {name}"
+            if out_channels > 0:
+                text = f"[{idx}] {name} | OUT {out_channels} | {hostapi_name} | {default_sr} Hz"
                 self.bass_combo.addItem(text, idx)
                 self.vocal_combo.addItem(text, idx)
+                bass_rows.append(idx)
+                vocal_rows.append(idx)
 
-                row = self.bass_combo.count() - 1
-                if "bluetooth" in name.lower() and best_bass_row == -1:
-                    best_bass_row = row
-
-                if idx == default_out and best_vocal_row == -1:
-                    best_vocal_row = row
-
-            if in_channels > 0 and self._is_input_device_available(idx, dev):
-                text = f"[{idx}] {name}"
+            if in_channels > 0:
+                text = f"[{idx}] {name} | IN {in_channels} | {hostapi_name} | {default_sr} Hz"
                 self.input_combo.addItem(text, idx)
-                row = self.input_combo.count() - 1
-                if idx == default_in and best_input_row == -1:
-                    best_input_row = row
+                input_rows.append(idx)
 
-        if self.bass_combo.count() > 0:
-            self.bass_combo.setCurrentIndex(best_bass_row if best_bass_row != -1 else 0)
-        if self.vocal_combo.count() > 0:
-            self.vocal_combo.setCurrentIndex(best_vocal_row if best_vocal_row != -1 else 0)
-            self._ensure_distinct_output_selection()
-        if self.input_combo.count() > 0:
-            self.input_combo.setCurrentIndex(best_input_row if best_input_row != -1 else 0)
+        self._restore_combo_selection(self.bass_combo, previous_bass_device, bass_rows)
+        self._restore_combo_selection(self.vocal_combo, previous_vocal_device, vocal_rows)
+        self._restore_combo_selection(self.input_combo, previous_input_device, input_rows)
+
+        if self.bass_combo.count() > 0 and self.vocal_combo.count() > 0:
+            if self.bass_combo.currentData() == self.vocal_combo.currentData():
+                self._ensure_distinct_output_selection()
 
         self.set_status("Audio devices refreshed.")
 
-    @staticmethod
-    def _is_output_device_available(device_index: int, dev: dict) -> bool:
-        try:
-            channels = max(1, min(2, int(dev.get("max_output_channels", 0))))
-            samplerate = float(dev.get("default_samplerate", 48000.0))
-            sd.check_output_settings(device=device_index, channels=channels, samplerate=samplerate)
-            return True
-        except Exception:
-            return False
+    def _restore_combo_selection(self, combo: QComboBox, previous_device: Optional[int], available_rows: list[int]):
+        if combo.count() == 0:
+            return
 
-    @staticmethod
-    def _is_input_device_available(device_index: int, dev: dict) -> bool:
-        try:
-            channels = max(1, min(2, int(dev.get("max_input_channels", 0))))
-            samplerate = float(dev.get("default_samplerate", 48000.0))
-            sd.check_input_settings(device=device_index, channels=channels, samplerate=samplerate)
-            return True
-        except Exception:
-            return False
+        if previous_device is not None:
+            for row in range(combo.count()):
+                if combo.itemData(row) == previous_device:
+                    combo.setCurrentIndex(row)
+                    return
+
+        if available_rows:
+            combo.setCurrentIndex(0)
 
     def _ensure_distinct_output_selection(self):
         if self.bass_combo.count() <= 1 or self.vocal_combo.count() <= 1:
