@@ -1,0 +1,29 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Build outputs
+dist/
+build/
+*.spec
+
+# Editor/system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project runtime data/cache (do not track)
+data/
+cache/
+*.cache
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
