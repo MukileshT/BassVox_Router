@@ -7,8 +7,9 @@ if not exist ".venv\Scripts\python.exe" (
     py -3 -m venv .venv
 )
 
-call ".venv\Scripts\activate.bat"
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 
-python app.py
+"%PYTHON_EXE%" -m pip install --upgrade pip
+"%PYTHON_EXE%" -m pip install -r requirements.txt
+
+"%PYTHON_EXE%" app.py

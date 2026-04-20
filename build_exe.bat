@@ -7,12 +7,15 @@ if not exist ".venv\Scripts\python.exe" (
     py -3 -m venv .venv
 )
 
-call ".venv\Scripts\activate.bat"
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-pip install pyinstaller
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 
-pyinstaller --noconfirm --onefile --windowed --name AudioSplitRouter ^
+"%PYTHON_EXE%" -m pip install --upgrade pip
+"%PYTHON_EXE%" -m pip install -r requirements.txt pyinstaller
+
+if exist build rmdir /s /q build
+if exist dist rmdir /s /q dist
+
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --onefile --windowed --name AudioSplitRouter ^
     --hidden-import=numpy ^
     --hidden-import=scipy ^
     --hidden-import=scipy.signal ^
