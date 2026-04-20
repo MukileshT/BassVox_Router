@@ -104,6 +104,8 @@ class SplitPlaybackEngine:
         self.stream_latency_sec = 0.08
         self.bass_gain = 1.0
         self.vocal_gain = 1.0
+        self.bass_volume = 1.0
+        self.vocal_volume = 1.0
 
         self.bass_device: Optional[int] = None
         self.vocal_device: Optional[int] = None
@@ -148,6 +150,10 @@ class SplitPlaybackEngine:
     def set_gains(self, bass_gain: float, vocal_gain: float):
         self.bass_gain = max(0.0, float(bass_gain))
         self.vocal_gain = max(0.0, float(vocal_gain))
+
+    def set_volumes(self, bass_volume: float, vocal_volume: float):
+        self.bass_volume = max(0.0, float(bass_volume))
+        self.vocal_volume = max(0.0, float(vocal_volume))
 
     def load_file(self, path: str):
         self.stop()
@@ -305,6 +311,8 @@ class SplitPlaybackEngine:
             bass, vocal = self.dsp.process_block(block)
             bass *= self.bass_gain
             vocal *= self.vocal_gain
+            bass *= self.bass_volume
+            vocal *= self.vocal_volume
             np.clip(bass, -1.0, 1.0, out=bass)
             np.clip(vocal, -1.0, 1.0, out=vocal)
 
@@ -380,6 +388,8 @@ class LiveSplitEngine:
         self.stream_latency_sec = 0.06
         self.bass_gain = 1.0
         self.vocal_gain = 1.0
+        self.bass_volume = 1.0
+        self.vocal_volume = 1.0
         self.dsp = AudioSplitterDSP(self.sample_rate)
 
         self.bass_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=24)
@@ -409,6 +419,10 @@ class LiveSplitEngine:
         self.bass_gain = max(0.0, float(bass_gain))
         self.vocal_gain = max(0.0, float(vocal_gain))
 
+    def set_volumes(self, bass_volume: float, vocal_volume: float):
+        self.bass_volume = max(0.0, float(bass_volume))
+        self.vocal_volume = max(0.0, float(vocal_volume))
+
     def _input_callback(self, indata, frames, time_info, status):
         if status:
             self._log(f"Live input status: {status}")
@@ -416,6 +430,8 @@ class LiveSplitEngine:
         bass, vocal = self.dsp.process_block(indata.copy())
         bass *= self.bass_gain
         vocal *= self.vocal_gain
+        bass *= self.bass_volume
+        vocal *= self.vocal_volume
         np.clip(bass, -1.0, 1.0, out=bass)
         np.clip(vocal, -1.0, 1.0, out=vocal)
 
@@ -636,6 +652,18 @@ class MainWindow(QMainWindow):
         self.vocal_gain_slider.valueChanged.connect(self.apply_gain_controls)
         self.vocal_gain_value_label = QLabel("1.00x")
 
+        self.bass_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bass_volume_slider.setRange(0, 100)
+        self.bass_volume_slider.setValue(100)
+        self.bass_volume_slider.valueChanged.connect(self.apply_volume_controls)
+        self.bass_volume_value_label = QLabel("100%")
+
+        self.vocal_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vocal_volume_slider.setRange(0, 100)
+        self.vocal_volume_slider.setValue(100)
+        self.vocal_volume_slider.valueChanged.connect(self.apply_volume_controls)
+        self.vocal_volume_value_label = QLabel("100%")
+
         refresh_btn = QPushButton("Refresh Devices")
         refresh_btn.clicked.connect(self.refresh_devices)
 
@@ -666,7 +694,19 @@ class MainWindow(QMainWindow):
         devices_layout.addWidget(QLabel("Vocal Gain:"), 6, 0)
         devices_layout.addLayout(vocal_gain_row, 6, 1)
 
-        devices_layout.addWidget(refresh_btn, 7, 1)
+        bass_volume_row = QHBoxLayout()
+        bass_volume_row.addWidget(self.bass_volume_slider, 1)
+        bass_volume_row.addWidget(self.bass_volume_value_label)
+        devices_layout.addWidget(QLabel("Bass Volume:"), 7, 0)
+        devices_layout.addLayout(bass_volume_row, 7, 1)
+
+        vocal_volume_row = QHBoxLayout()
+        vocal_volume_row.addWidget(self.vocal_volume_slider, 1)
+        vocal_volume_row.addWidget(self.vocal_volume_value_label)
+        devices_layout.addWidget(QLabel("Vocal Volume:"), 8, 0)
+        devices_layout.addLayout(vocal_volume_row, 8, 1)
+
+        devices_layout.addWidget(refresh_btn, 9, 1)
 
         live_controls = QHBoxLayout()
         live_start_btn = QPushButton("Start Live Split")
@@ -675,7 +715,7 @@ class MainWindow(QMainWindow):
         live_stop_btn.clicked.connect(self.stop_live)
         live_controls.addWidget(live_start_btn)
         live_controls.addWidget(live_stop_btn)
-        devices_layout.addLayout(live_controls, 8, 0, 1, 2)
+        devices_layout.addLayout(live_controls, 10, 0, 1, 2)
 
         middle_layout.addWidget(playlist_group, 3)
         middle_layout.addWidget(devices_group, 2)
@@ -690,6 +730,7 @@ class MainWindow(QMainWindow):
         self._update_latency_label(self.latency_slider.value())
         self.apply_audio_tuning()
         self.apply_gain_controls()
+        self.apply_volume_controls()
 
     def _apply_styles(self):
         self.setStyleSheet(
@@ -905,6 +946,14 @@ class MainWindow(QMainWindow):
         self.vocal_gain_value_label.setText(f"{vocal_gain:.2f}x")
         self.playback.set_gains(bass_gain=bass_gain, vocal_gain=vocal_gain)
         self.live.set_gains(bass_gain=bass_gain, vocal_gain=vocal_gain)
+
+    def apply_volume_controls(self):
+        bass_volume = float(self.bass_volume_slider.value()) / 100.0
+        vocal_volume = float(self.vocal_volume_slider.value()) / 100.0
+        self.bass_volume_value_label.setText(f"{int(self.bass_volume_slider.value())}%")
+        self.vocal_volume_value_label.setText(f"{int(self.vocal_volume_slider.value())}%")
+        self.playback.set_volumes(bass_volume=bass_volume, vocal_volume=vocal_volume)
+        self.live.set_volumes(bass_volume=bass_volume, vocal_volume=vocal_volume)
 
     def _on_seek_pressed(self):
         self.user_seeking = True

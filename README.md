@@ -24,6 +24,7 @@ It also supports **real-time live splitting** from an input device (mic/line-in)
 - Select separate output devices for bass and vocal
 - Buffer and latency controls
 - Per-band gain controls (Bass Gain, Vocal Gain)
+- Separate volume controls (Bass Volume, Vocal Volume)
 - Real-time live split mode
 - Modern dark UI
 - One-click run via BAT file
