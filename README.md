@@ -50,4 +50,4 @@ Then use:
 - Separation is DSP-based (filters + stereo operations), not source-separation AI.
 - Best quality with stereo songs and proper device sample-rate support.
 - If Bluetooth has delay, use low-latency devices/drivers when possible.
-- Loopback capture requires a Windows WASAPI output device.
+- Loopback capture uses the Windows WASAPI `[Loopback]` input device for the selected output.

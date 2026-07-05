@@ -395,7 +395,6 @@ class LiveSplitEngine:
         self.bass_channels: int = 2
         self.vocal_channels: int = 2
         self.use_loopback: bool = False
-        self.source_extra_settings = None
 
         self.blocksize = 1024
         self.sample_rate = 48000
@@ -430,15 +429,7 @@ class LiveSplitEngine:
         source_info = sd.query_devices(source_device)
         bass_info = sd.query_devices(bass_device)
         vocal_info = sd.query_devices(vocal_device)
-        if self.use_loopback:
-            source_hostapi = sd.query_hostapis()[int(source_info["hostapi"])]["name"]
-            if source_hostapi != "Windows WASAPI":
-                raise RuntimeError("Loopback capture requires a Windows WASAPI output device.")
-            self.source_channels = max(1, min(2, int(source_info.get("max_output_channels", 2))))
-            self.source_extra_settings = sd.WasapiSettings(loopback=True)
-        else:
-            self.source_channels = max(1, min(2, int(source_info.get("max_input_channels", 2))))
-            self.source_extra_settings = None
+        self.source_channels = max(1, min(2, int(source_info.get("max_input_channels", 2))))
         self.bass_channels = max(1, min(2, int(bass_info.get("max_output_channels", 2))))
         self.vocal_channels = max(1, min(2, int(vocal_info.get("max_output_channels", 2))))
         self.dsp = AudioSplitterDSP(self.sample_rate)
@@ -516,7 +507,6 @@ class LiveSplitEngine:
             dtype="float32",
             blocksize=self.blocksize,
             latency=self.stream_latency_sec,
-            extra_settings=self.source_extra_settings,
             callback=self._input_callback,
         )
         self.bass_stream = sd.OutputStream(
@@ -882,6 +872,12 @@ class MainWindow(QMainWindow):
         return int(data)
 
     def refresh_devices(self):
+        try:
+            if hasattr(sd._lib, "PaWasapi_UpdateDeviceList"):
+                sd._lib.PaWasapi_UpdateDeviceList()
+        except Exception:
+            pass
+
         previous_bass_device = self.bass_combo.currentData()
         previous_vocal_device = self.vocal_combo.currentData()
         previous_input_device = self.input_combo.currentData()
@@ -906,14 +902,12 @@ class MainWindow(QMainWindow):
             out_channels = int(dev["max_output_channels"])
             in_channels = int(dev["max_input_channels"])
             default_sr = int(float(dev.get("default_samplerate", 48000.0)))
+            is_loopback = "[Loopback]" in name
 
             if out_channels > 0:
                 text = f"[{idx}] {name} | OUT {out_channels} | {hostapi_name} | {default_sr} Hz"
                 self.bass_combo.addItem(text, idx)
                 self.vocal_combo.addItem(text, idx)
-                if hostapi_name == "Windows WASAPI":
-                    self.loopback_combo.addItem(text, idx)
-                    loopback_rows.append(idx)
                 bass_rows.append(idx)
                 vocal_rows.append(idx)
 
@@ -921,6 +915,9 @@ class MainWindow(QMainWindow):
                 text = f"[{idx}] {name} | IN {in_channels} | {hostapi_name} | {default_sr} Hz"
                 self.input_combo.addItem(text, idx)
                 input_rows.append(idx)
+                if is_loopback:
+                    self.loopback_combo.addItem(text, idx)
+                    loopback_rows.append(idx)
 
         self._restore_combo_selection(self.bass_combo, previous_bass_device, bass_rows)
         self._restore_combo_selection(self.vocal_combo, previous_vocal_device, vocal_rows)
