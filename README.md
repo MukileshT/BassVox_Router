@@ -26,6 +26,7 @@ It also supports **real-time live splitting** from an input device (mic/line-in)
 - Per-band gain controls (Bass Gain, Vocal Gain)
 - Separate volume controls (Bass Volume, Vocal Volume)
 - Real-time live split mode
+- Windows WASAPI loopback capture for splitting system audio in real time
 - Modern dark UI
 - One-click run via BAT file
 
@@ -49,3 +50,4 @@ Then use:
 - Separation is DSP-based (filters + stereo operations), not source-separation AI.
 - Best quality with stereo songs and proper device sample-rate support.
 - If Bluetooth has delay, use low-latency devices/drivers when possible.
+- Loopback capture requires a Windows WASAPI output device.
