@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QSlider,
     QFileDialog,
     QGridLayout,
@@ -387,12 +388,13 @@ class LiveSplitEngine:
         self.bass_stream = None
         self.vocal_stream = None
 
-        self.input_device: Optional[int] = None
+        self.source_device: Optional[int] = None
         self.bass_device: Optional[int] = None
         self.vocal_device: Optional[int] = None
-        self.input_channels: int = 2
+        self.source_channels: int = 2
         self.bass_channels: int = 2
         self.vocal_channels: int = 2
+        self.use_loopback: bool = False
 
         self.blocksize = 1024
         self.sample_rate = 48000
@@ -409,15 +411,25 @@ class LiveSplitEngine:
     def _log(self, msg: str):
         self.status_cb(msg)
 
-    def configure(self, input_device: int, bass_device: int, vocal_device: int, sample_rate: int):
-        self.input_device = input_device
+    def configure(
+        self,
+        source_device: int,
+        bass_device: int,
+        vocal_device: int,
+        sample_rate: int,
+        *,
+        use_loopback: bool = False,
+    ):
+        self.source_device = source_device
         self.bass_device = bass_device
         self.vocal_device = vocal_device
         self.sample_rate = sample_rate
-        input_info = sd.query_devices(input_device)
+        self.use_loopback = bool(use_loopback)
+
+        source_info = sd.query_devices(source_device)
         bass_info = sd.query_devices(bass_device)
         vocal_info = sd.query_devices(vocal_device)
-        self.input_channels = max(1, min(2, int(input_info.get("max_input_channels", 2))))
+        self.source_channels = max(1, min(2, int(source_info.get("max_input_channels", 2))))
         self.bass_channels = max(1, min(2, int(bass_info.get("max_output_channels", 2))))
         self.vocal_channels = max(1, min(2, int(vocal_info.get("max_output_channels", 2))))
         self.dsp = AudioSplitterDSP(self.sample_rate)
@@ -436,7 +448,7 @@ class LiveSplitEngine:
 
     def _input_callback(self, indata, frames, time_info, status):
         if status:
-            self._log(f"Live input status: {status}")
+            self._log(f"Live source status: {status}")
 
         bass, vocal = self.dsp.process_block(indata.copy())
         bass *= self.bass_gain
@@ -483,15 +495,15 @@ class LiveSplitEngine:
         return callback
 
     def start(self):
-        if None in (self.input_device, self.bass_device, self.vocal_device):
-            raise RuntimeError("Input/Bass/Vocal device not configured")
+        if None in (self.source_device, self.bass_device, self.vocal_device):
+            raise RuntimeError("Source/Bass/Vocal device not configured")
 
         self.stop()
 
         self.input_stream = sd.InputStream(
-            device=self.input_device,
+            device=self.source_device,
             samplerate=self.sample_rate,
-            channels=self.input_channels,
+            channels=self.source_channels,
             dtype="float32",
             blocksize=self.blocksize,
             latency=self.stream_latency_sec,
@@ -638,6 +650,9 @@ class MainWindow(QMainWindow):
         self.bass_combo = QComboBox()
         self.vocal_combo = QComboBox()
         self.input_combo = QComboBox()
+        self.loopback_checkbox = QCheckBox("Capture system audio using loopback (WASAPI)")
+        self.loopback_checkbox.stateChanged.connect(self._update_live_source_controls)
+        self.loopback_combo = QComboBox()
         self.bass_combo.currentIndexChanged.connect(self._ensure_distinct_output_selection)
         self.buffer_combo = QComboBox()
         self.buffer_combo.addItems(["256", "512", "1024", "2048", "4096"])
@@ -682,42 +697,45 @@ class MainWindow(QMainWindow):
         devices_layout.addWidget(self.bass_combo, 0, 1)
         devices_layout.addWidget(QLabel("Vocal Output Device (Laptop):"), 1, 0)
         devices_layout.addWidget(self.vocal_combo, 1, 1)
-        devices_layout.addWidget(QLabel("Live Input Device:"), 2, 0)
+        devices_layout.addWidget(QLabel("Live Input Device (Mic/Line-In):"), 2, 0)
         devices_layout.addWidget(self.input_combo, 2, 1)
-        devices_layout.addWidget(QLabel("Buffer (samples):"), 3, 0)
-        devices_layout.addWidget(self.buffer_combo, 3, 1)
+        devices_layout.addWidget(self.loopback_checkbox, 3, 0)
+        devices_layout.addWidget(QLabel("Loopback Source Device:"), 4, 0)
+        devices_layout.addWidget(self.loopback_combo, 4, 1)
+        devices_layout.addWidget(QLabel("Buffer (samples):"), 5, 0)
+        devices_layout.addWidget(self.buffer_combo, 5, 1)
 
         latency_row = QHBoxLayout()
         latency_row.addWidget(self.latency_slider, 1)
         latency_row.addWidget(self.latency_value_label)
-        devices_layout.addWidget(QLabel("Latency:"), 4, 0)
-        devices_layout.addLayout(latency_row, 4, 1)
+        devices_layout.addWidget(QLabel("Latency:"), 6, 0)
+        devices_layout.addLayout(latency_row, 6, 1)
 
         bass_gain_row = QHBoxLayout()
         bass_gain_row.addWidget(self.bass_gain_slider, 1)
         bass_gain_row.addWidget(self.bass_gain_value_label)
-        devices_layout.addWidget(QLabel("Bass Gain:"), 5, 0)
-        devices_layout.addLayout(bass_gain_row, 5, 1)
+        devices_layout.addWidget(QLabel("Bass Gain:"), 7, 0)
+        devices_layout.addLayout(bass_gain_row, 7, 1)
 
         vocal_gain_row = QHBoxLayout()
         vocal_gain_row.addWidget(self.vocal_gain_slider, 1)
         vocal_gain_row.addWidget(self.vocal_gain_value_label)
-        devices_layout.addWidget(QLabel("Vocal Gain:"), 6, 0)
-        devices_layout.addLayout(vocal_gain_row, 6, 1)
+        devices_layout.addWidget(QLabel("Vocal Gain:"), 8, 0)
+        devices_layout.addLayout(vocal_gain_row, 8, 1)
 
         bass_volume_row = QHBoxLayout()
         bass_volume_row.addWidget(self.bass_volume_slider, 1)
         bass_volume_row.addWidget(self.bass_volume_value_label)
-        devices_layout.addWidget(QLabel("Bass Volume:"), 7, 0)
-        devices_layout.addLayout(bass_volume_row, 7, 1)
+        devices_layout.addWidget(QLabel("Bass Volume:"), 9, 0)
+        devices_layout.addLayout(bass_volume_row, 9, 1)
 
         vocal_volume_row = QHBoxLayout()
         vocal_volume_row.addWidget(self.vocal_volume_slider, 1)
         vocal_volume_row.addWidget(self.vocal_volume_value_label)
-        devices_layout.addWidget(QLabel("Vocal Volume:"), 8, 0)
-        devices_layout.addLayout(vocal_volume_row, 8, 1)
+        devices_layout.addWidget(QLabel("Vocal Volume:"), 10, 0)
+        devices_layout.addLayout(vocal_volume_row, 10, 1)
 
-        devices_layout.addWidget(refresh_btn, 9, 1)
+        devices_layout.addWidget(refresh_btn, 11, 1)
 
         live_controls = QHBoxLayout()
         live_start_btn = QPushButton("Start Live Split")
@@ -726,7 +744,7 @@ class MainWindow(QMainWindow):
         live_stop_btn.clicked.connect(self.stop_live)
         live_controls.addWidget(live_start_btn)
         live_controls.addWidget(live_stop_btn)
-        devices_layout.addLayout(live_controls, 10, 0, 1, 2)
+        devices_layout.addLayout(live_controls, 12, 0, 1, 2)
 
         middle_layout.addWidget(playlist_group, 3)
         middle_layout.addWidget(devices_group, 2)
@@ -742,6 +760,7 @@ class MainWindow(QMainWindow):
         self.apply_audio_tuning()
         self.apply_gain_controls()
         self.apply_volume_controls()
+        self._update_live_source_controls()
 
     def _apply_styles(self):
         self.setStyleSheet(
@@ -853,13 +872,21 @@ class MainWindow(QMainWindow):
         return int(data)
 
     def refresh_devices(self):
+        try:
+            if hasattr(sd._lib, "PaWasapi_UpdateDeviceList"):
+                sd._lib.PaWasapi_UpdateDeviceList()
+        except Exception:
+            pass
+
         previous_bass_device = self.bass_combo.currentData()
         previous_vocal_device = self.vocal_combo.currentData()
         previous_input_device = self.input_combo.currentData()
+        previous_loopback_device = self.loopback_combo.currentData()
 
         self.bass_combo.clear()
         self.vocal_combo.clear()
         self.input_combo.clear()
+        self.loopback_combo.clear()
 
         devices = sd.query_devices()
         hostapis = sd.query_hostapis()
@@ -867,6 +894,7 @@ class MainWindow(QMainWindow):
         bass_rows: list[int] = []
         vocal_rows: list[int] = []
         input_rows: list[int] = []
+        loopback_rows: list[int] = []
 
         for idx, dev in enumerate(devices):
             name = dev["name"]
@@ -874,6 +902,7 @@ class MainWindow(QMainWindow):
             out_channels = int(dev["max_output_channels"])
             in_channels = int(dev["max_input_channels"])
             default_sr = int(float(dev.get("default_samplerate", 48000.0)))
+            is_loopback = "[Loopback]" in name
 
             if out_channels > 0:
                 text = f"[{idx}] {name} | OUT {out_channels} | {hostapi_name} | {default_sr} Hz"
@@ -886,15 +915,25 @@ class MainWindow(QMainWindow):
                 text = f"[{idx}] {name} | IN {in_channels} | {hostapi_name} | {default_sr} Hz"
                 self.input_combo.addItem(text, idx)
                 input_rows.append(idx)
+                if is_loopback:
+                    self.loopback_combo.addItem(text, idx)
+                    loopback_rows.append(idx)
 
         self._restore_combo_selection(self.bass_combo, previous_bass_device, bass_rows)
         self._restore_combo_selection(self.vocal_combo, previous_vocal_device, vocal_rows)
         self._restore_combo_selection(self.input_combo, previous_input_device, input_rows)
+        self._restore_combo_selection(self.loopback_combo, previous_loopback_device, loopback_rows)
+
+        loopback_available = self.loopback_combo.count() > 0
+        self.loopback_checkbox.setEnabled(loopback_available)
+        if not loopback_available:
+            self.loopback_checkbox.setChecked(False)
 
         if self.bass_combo.count() > 0 and self.vocal_combo.count() > 0:
             if self.bass_combo.currentData() == self.vocal_combo.currentData():
                 self._ensure_distinct_output_selection()
 
+        self._update_live_source_controls()
         self.set_status("Audio devices refreshed.")
 
     def _restore_combo_selection(self, combo: QComboBox, previous_device: Optional[int], available_rows: list[int]):
@@ -922,6 +961,11 @@ class MainWindow(QMainWindow):
             if self.vocal_combo.itemData(row) != bass_dev:
                 self.vocal_combo.setCurrentIndex(row)
                 break
+
+    def _update_live_source_controls(self, *_):
+        loopback_enabled = self.loopback_checkbox.isChecked()
+        self.input_combo.setEnabled(not loopback_enabled)
+        self.loopback_combo.setEnabled(loopback_enabled)
 
     @staticmethod
     def _format_time(seconds: float) -> str:
@@ -1036,24 +1080,30 @@ class MainWindow(QMainWindow):
 
     def start_live(self):
         try:
-            input_dev = self._selected_device_index(self.input_combo)
+            loopback_enabled = self.loopback_checkbox.isChecked()
+            source_combo = self.loopback_combo if loopback_enabled else self.input_combo
+            source_dev = self._selected_device_index(source_combo)
             bass_dev = self._selected_device_index(self.bass_combo)
             vocal_dev = self._selected_device_index(self.vocal_combo)
 
             if bass_dev == vocal_dev:
                 raise RuntimeError("Please select different output devices for Bass and Vocal.")
 
-            input_info = sd.query_devices(input_dev)
-            sr = int(input_info.get("default_samplerate", 48000))
+            source_info = sd.query_devices(source_dev)
+            sr = int(source_info.get("default_samplerate", 48000))
 
             self.live.configure(
-                input_device=input_dev,
+                source_device=source_dev,
                 bass_device=bass_dev,
                 vocal_device=vocal_dev,
                 sample_rate=sr,
+                use_loopback=loopback_enabled,
             )
             self.live.start()
-            self.set_status(f"Live split active @ {sr} Hz")
+            if loopback_enabled:
+                self.set_status(f"Loopback split active @ {sr} Hz")
+            else:
+                self.set_status(f"Live split active @ {sr} Hz")
         except Exception as exc:
             QMessageBox.critical(self, "Live Split Error", str(exc))
             self.set_status("Could not start live split.")
